@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"strconv"
-	"time"
 
 	"github.com/tossp/ikuai"
 	"github.com/tossp/ikuai/action"
@@ -108,25 +107,10 @@ func (i *IKuaiExporter) generateAppFlowBucketsCounts(value float64) map[float64]
 }
 
 func (i *IKuaiExporter) Describe(descs chan<- *prometheus.Desc) {
-	descs <- i.versionDesc
-	descs <- i.cpuUsageRatioDesc
-	descs <- i.cpuTempDesc
-	descs <- i.memSizeDesc
-	descs <- i.memUsageDesc
-	descs <- i.memCachedDesc
-	descs <- i.memBuffersDesc
-	descs <- i.lanDeviceDesc
-	descs <- i.lanDeviceCountDesc
-	descs <- i.ifaceInfoDesc
 	descs <- i.UpDesc
-	descs <- i.UpTimeDesc
-	descs <- i.streamUpBytesDesc
-	descs <- i.streamDownBytesDesc
 	descs <- i.streamUpSpeedDesc
 	descs <- i.streamDownSpeedDesc
 	descs <- i.connCountDesc
-	descs <- i.dhcpAddrpoolCountDesc
-	descs <- i.appFlowHistogramDesc
 }
 
 func (i *IKuaiExporter) Collect(metrics chan<- prometheus.Metric) {
@@ -148,109 +132,59 @@ func (i *IKuaiExporter) Collect(metrics chan<- prometheus.Metric) {
 
 	sysStat := stat.Data.SysStat
 
-	metrics <- prometheus.MustNewConstMetric(i.versionDesc, prometheus.GaugeValue, 1,
-		sysStat.Verinfo.Version,
-		sysStat.Verinfo.Arch,
-		sysStat.Verinfo.Verstring)
-
-	if len(sysStat.Cputemp) > 0 {
-		metrics <- prometheus.MustNewConstMetric(i.cpuTempDesc, prometheus.GaugeValue, float64(sysStat.Cputemp[0]))
-	}
-
-	for idx, item := range sysStat.Cpu {
-		s := item[:len(item)-1]
-		per, _ := strconv.ParseFloat(s, 64)
-
-		metrics <- prometheus.MustNewConstMetric(i.cpuUsageRatioDesc, prometheus.GaugeValue, per,
-			fmt.Sprintf("core/%v", idx))
-	}
-
-	metrics <- prometheus.MustNewConstMetric(i.memSizeDesc, prometheus.GaugeValue, float64(sysStat.Memory.Total))
-	metrics <- prometheus.MustNewConstMetric(i.memUsageDesc, prometheus.GaugeValue,
-		float64(sysStat.Memory.Total-sysStat.Memory.Available))
-	metrics <- prometheus.MustNewConstMetric(i.memCachedDesc, prometheus.GaugeValue, float64(sysStat.Memory.Cached))
-	metrics <- prometheus.MustNewConstMetric(i.memBuffersDesc, prometheus.GaugeValue, float64(sysStat.Memory.Buffers))
-
-	metrics <- prometheus.MustNewConstMetric(i.dhcpAddrpoolCountDesc, prometheus.GaugeValue, float64(stat.Data.DhcpAddrpoolNum.AvailableNum))
-
-	if len(stat.Data.AppFlow.AppFlow) > 0 {
-		for name, value := range stat.Data.AppFlow.AppFlow[0] {
-			// 排除不需要的字段或处理特殊字段
-			if name == "Total" {
-				continue
-			}
-			metrics <- prometheus.MustNewConstHistogram(
-				i.appFlowHistogramDesc,
-				uint64(value),
-				float64(value),
-				i.generateAppFlowBucketsCounts(float64(value)),
-				name,
-			)
-		}
-	}
-
 	lanDevice, err := i.ikuai.ShowMonitorLan()
 
-	if isFail(&lanDevice.Result, err) {
-		log.Printf("ikuai ShowMonitorLan: %v, %+v", err, lanDevice.Result)
+	if err != nil {
+		log.Printf("ikuai ShowMonitorLan: %v", err)
 	} else {
-		devices := make(map[string]*action.LanDeviceInfo, len(lanDevice.Data.Data))
+		if lanDevice == nil {
+			log.Printf("ikuai ShowMonitorLan: nil response")
+		} else if lanDevice.Result.ErrMsg != "Success" {
+			log.Printf("ikuai ShowMonitorLan: %+v", lanDevice.Result)
+		} else {
+			devices := make(map[string]*action.LanDeviceInfo, len(lanDevice.Data.Data))
 
-		for _, device := range lanDevice.Data.Data {
-			deviceId := fmt.Sprintf("device/%v", device.Mac)
+			for _, device := range lanDevice.Data.Data {
+				deviceId := fmt.Sprintf("device/%v", device.Mac)
 
-			if i, has := devices[deviceId]; has {
-				i.TotalUp += device.TotalUp
-				i.TotalDown += device.TotalDown
-				i.Upload += device.Upload
-				i.Download += device.Download
-				i.ConnectNum += device.ConnectNum
-				// i.IPAddr += "|" + device.IPAddr
-			} else {
-				devices[deviceId] = &device
+				if i, has := devices[deviceId]; has {
+					i.TotalUp += device.TotalUp
+					i.TotalDown += device.TotalDown
+					i.Upload += device.Upload
+					i.Download += device.Download
+					i.ConnectNum += device.ConnectNum
+					// i.IPAddr += "|" + device.IPAddr
+				} else {
+					devices[deviceId] = &device
+				}
+			}
+
+			for deviceId, device := range devices {
+				metrics <- prometheus.MustNewConstMetric(i.streamUpSpeedDesc, prometheus.GaugeValue, float64(device.Upload),
+					deviceId)
+
+				metrics <- prometheus.MustNewConstMetric(i.streamDownSpeedDesc, prometheus.GaugeValue, float64(device.Download),
+					deviceId)
+
+				metrics <- prometheus.MustNewConstMetric(i.connCountDesc, prometheus.GaugeValue, float64(device.ConnectNum),
+					deviceId)
 			}
 		}
-
-		for deviceId, device := range devices {
-			metrics <- prometheus.MustNewConstMetric(i.lanDeviceDesc, prometheus.GaugeValue, 1,
-				deviceId, device.Mac, device.Hostname, device.IPAddr, device.Comment)
-
-			metrics <- prometheus.MustNewConstMetric(i.streamUpBytesDesc, prometheus.CounterValue, float64(device.TotalUp),
-				deviceId)
-
-			metrics <- prometheus.MustNewConstMetric(i.streamDownBytesDesc, prometheus.CounterValue, float64(device.TotalDown),
-				deviceId)
-
-			metrics <- prometheus.MustNewConstMetric(i.streamUpSpeedDesc, prometheus.GaugeValue, float64(device.Upload),
-				deviceId)
-
-			metrics <- prometheus.MustNewConstMetric(i.streamDownSpeedDesc, prometheus.GaugeValue, float64(device.Download),
-				deviceId)
-
-			metrics <- prometheus.MustNewConstMetric(i.connCountDesc, prometheus.GaugeValue, float64(device.ConnectNum),
-				deviceId)
-		}
 	}
-
-	metrics <- prometheus.MustNewConstMetric(i.lanDeviceCountDesc, prometheus.GaugeValue, float64(sysStat.OnlineUser.Count))
 
 	monitorInterface, err := i.ikuai.ShowMonitorInterface()
 
-	if isFail(&monitorInterface.Result, err) {
-		log.Printf("ikuai ShowMonitorInterface: %v, %+v", err, monitorInterface.Result)
+	if err != nil {
+		log.Printf("ikuai ShowMonitorInterface: %v", err)
 	} else {
-		i.interfaceMetrics(metrics, monitorInterface)
+		if monitorInterface == nil {
+			log.Printf("ikuai ShowMonitorInterface: nil response")
+		} else if monitorInterface.Result.ErrMsg != "Success" {
+			log.Printf("ikuai ShowMonitorInterface: %+v", monitorInterface.Result)
+		} else {
+			i.interfaceMetrics(metrics, monitorInterface)
+		}
 	}
-
-	// Host metric
-	metrics <- prometheus.MustNewConstMetric(i.UpTimeDesc, prometheus.CounterValue, float64(sysStat.Uptime),
-		"host")
-
-	metrics <- prometheus.MustNewConstMetric(i.streamUpBytesDesc, prometheus.CounterValue, float64(sysStat.Stream.TotalUp),
-		"host")
-
-	metrics <- prometheus.MustNewConstMetric(i.streamDownBytesDesc, prometheus.CounterValue, float64(sysStat.Stream.TotalDown),
-		"host")
 
 	metrics <- prometheus.MustNewConstMetric(i.streamUpSpeedDesc, prometheus.GaugeValue, float64(sysStat.Stream.Upload),
 		"host")
@@ -268,42 +202,7 @@ func (i *IKuaiExporter) Collect(metrics chan<- prometheus.Metric) {
 
 func (i *IKuaiExporter) interfaceMetrics(metrics chan<- prometheus.Metric, monitorInterface *action.ShowMonitorInterfaceResult) {
 	for _, iface := range monitorInterface.Data.IfaceStream {
-		internet := ""
-		parentIface := ""
-		ifaceUp := 1
 		ifaceId := fmt.Sprintf("iface/%v", iface.Interface)
-		ifaceUptime := int64(0)
-
-		for _, ifaceCheck := range monitorInterface.Data.IfaceCheck {
-			if ifaceCheck.Interface == iface.Interface {
-				internet = ifaceCheck.Internet
-				parentIface = ifaceCheck.ParentInterface
-
-				if ifaceCheck.Result != "success" {
-					ifaceUp = 0
-				} else {
-					updateTime, err := strconv.ParseInt(ifaceCheck.Updatetime, 10, 64)
-					if err == nil {
-						ifaceUptime = time.Now().Unix() - updateTime
-					}
-				}
-			}
-		}
-
-		metrics <- prometheus.MustNewConstMetric(i.ifaceInfoDesc, prometheus.GaugeValue, 1,
-			ifaceId, iface.Interface, iface.Comment, internet, parentIface, iface.IPAddr)
-
-		metrics <- prometheus.MustNewConstMetric(i.UpDesc, prometheus.GaugeValue, float64(ifaceUp),
-			ifaceId)
-
-		metrics <- prometheus.MustNewConstMetric(i.UpTimeDesc, prometheus.CounterValue, float64(ifaceUptime),
-			ifaceId)
-
-		metrics <- prometheus.MustNewConstMetric(i.streamUpBytesDesc, prometheus.CounterValue, float64(iface.TotalUp),
-			ifaceId)
-
-		metrics <- prometheus.MustNewConstMetric(i.streamDownBytesDesc, prometheus.CounterValue, float64(iface.TotalDown),
-			ifaceId)
 
 		metrics <- prometheus.MustNewConstMetric(i.streamUpSpeedDesc, prometheus.GaugeValue, float64(iface.Upload),
 			ifaceId)

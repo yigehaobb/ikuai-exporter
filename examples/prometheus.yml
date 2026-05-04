@@ -1,12 +1,18 @@
-scrape_configs:
+- job_name: 'prometheus'
+    static_configs:
+      - targets: [ 'localhost:9090' ]
   - job_name: 'ikuai_exporter'
-    scrape_interval: 10s
-    scrape_timeout: 2s
+    scrape_interval: 300s
+    scrape_timeout: 10s
     relabel_configs:
       - source_labels: [__address__]
         target_label: instance
       - target_label: __address__
-        replacement: ikuai-exporter:9090 # 容器地址
+        replacement: 192.168.0.11:9222  # exporter.
     static_configs:
       - targets:
-          - 192.168.9.1 # 实例名称不该
+          - 192.168.0.252
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'ikuai_up|ikuai_network_send_kbytes_per_second|ikuai_network_recv_kbytes_per_second'
+        action: keep

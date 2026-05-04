@@ -1,5 +1,5 @@
 # IKuai Prometheus Exporter
-
+修改只导出流量自用
 
 ![grafana](https://raw.githubusercontent.com/tossp/ikuai-exporter/refs/heads/main/docs/images/grafana.png "grafana")
 
